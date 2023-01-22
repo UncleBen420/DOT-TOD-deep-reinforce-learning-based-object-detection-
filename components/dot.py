@@ -8,45 +8,61 @@ class PolicyNet(nn.Module):
     """
     This class contain the implementation of the policy net.
     """
-    def __init__(self, actions=2):
+    def __init__(self, epsilon=0.2, actions=2):
         super(PolicyNet, self).__init__()
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         self.action_space = np.arange(actions)
         self.nb_actions = actions
+        self.e = epsilon
 
         # The feature extractor
+
         self.backbone = torch.nn.Sequential(
             torch.nn.Conv2d(3, 16, kernel_size=7, stride=3),
             torch.nn.ReLU(),
             torch.nn.BatchNorm2d(16),
             torch.nn.Conv2d(16, 32, kernel_size=5, stride=2),
             torch.nn.ReLU(),
-            torch.nn.BatchNorm2d(32),
+            torch.nn.Dropout(0.2),
             torch.nn.Conv2d(32, 64, kernel_size=3, stride=2),
             torch.nn.ReLU(),
             torch.nn.BatchNorm2d(64),
             torch.nn.Conv2d(64, 128, kernel_size=3),
             torch.nn.ReLU(),
-            torch.nn.Flatten(),
+            torch.nn.Flatten()
         )
 
         # the mlp
         self.head = torch.nn.Sequential(
-            torch.nn.Linear(128, 32),
+            torch.nn.Linear(128, 64),
             torch.nn.ReLU(),
-            torch.nn.LayerNorm(32),
-            torch.nn.Linear(32, 8),
+            torch.nn.LayerNorm(64),
+            torch.nn.Linear(64, 32),
             torch.nn.ReLU(),
-            torch.nn.Linear(8, actions),
-            torch.nn.Softmax(dim=1)
+            torch.nn.Linear(32, 16),
+            torch.nn.ReLU(),
+            torch.nn.LayerNorm(16),
+            torch.nn.Linear(16, 8),
+            torch.nn.ReLU(),
+            torch.nn.Linear(8, actions)
+            #torch.nn.Softmax(dim=1)
         )
 
-        self.backbone.to(self.device)
+        #self.backbone.to(self.device)
         self.head.to(self.device)
 
         self.head.apply(self.init_weights)
+
+    def follow_polic2(self, probs):
+        """
+        this method allow the agent to choose an action randomly (for exploration) but with the respect of the
+        probability given by the policy net
+        @param probs: the probabilities returned by the model.
+        @return: an action include in the action space.
+        """
+        return np.random.choice(self.action_space, p=probs)
 
     def follow_policy(self, probs):
         """
@@ -55,7 +71,11 @@ class PolicyNet(nn.Module):
         @param probs: the probabilities returned by the model.
         @return: an action include in the action space.
         """
-        return np.random.choice(self.action_space, p=probs)
+        p = np.random.random()
+        if p < self.e:
+            return np.random.choice(self.action_space)
+        else:
+            return np.argmax(probs)
 
     def init_weights(self, m):
         """
@@ -73,6 +93,7 @@ class PolicyNet(nn.Module):
         @param state: the state given by the environment.
         @return: the transformed tensor
         """
+        #return state
         return state.permute(0, 3, 1, 2)
 
     def forward(self, state):
@@ -81,8 +102,8 @@ class PolicyNet(nn.Module):
         @param state: a tensor of state.
         @return: the probabilities of taking an action for the state.
         """
-        x = self.backbone(state)
-        return self.head(x)
+        state = self.backbone(state)
+        return self.head(state)
 
 
 class DOT:
@@ -90,14 +111,13 @@ class DOT:
     The class DOT (Detection of target). it is basically a policy gradient descent.
     """
 
-    def __init__(self, environment, learning_rate=0.0005, gamma=0.05,
-                lr_gamma=0.7, pa_dataset_size=256, pa_batch_size=50):
+    def __init__(self, environment, learning_rate=0.005, gamma=0.05,
+                lr_gamma=0.7, pa_dataset_size=3000, pa_batch_size=100, epsilon=0.2):
 
         self.gamma = gamma
         self.environment = environment
-        self.environment.agent = self
 
-        self.policy = PolicyNet()
+        self.policy = PolicyNet(epsilon)
 
         self.pa_dataset_size = pa_dataset_size
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
@@ -132,9 +152,21 @@ class DOT:
         print(self.policy)
         print("TOTAL PARAMS: {0}".format(sum(p.numel() for p in self.policy.parameters())))
 
-    def update_policy(self, batch):
+    def update_policy(self):
 
-        S, A, G = batch
+        shuffle_index = torch.randperm(len(self.A_pa_batch))
+        self.A_pa_batch = self.A_pa_batch[shuffle_index]
+        self.G_pa_batch = self.G_pa_batch[shuffle_index]
+        self.S_pa_batch = self.S_pa_batch[shuffle_index]
+
+        if len(self.A_pa_batch) < self.pa_batch_size:
+            return 0.
+
+        S = self.S_pa_batch[:self.pa_batch_size]
+        A = self.A_pa_batch[:self.pa_batch_size]
+        G = self.G_pa_batch[:self.pa_batch_size]
+
+        #S, A, G = batch
 
         # Calculate loss
         self.optimizer.zero_grad()
@@ -143,9 +175,15 @@ class DOT:
         log_probs = torch.log(action_probs)
         log_probs = torch.nan_to_num(log_probs)
 
-        selected_log_probs = torch.gather(log_probs, 1, A.unsqueeze(1))
+        #selected_log_probs = torch.gather(log_probs, 1, A.unsqueeze(1))
+        select_action = torch.gather(action_probs, 1, A.unsqueeze(1))
+        #loss = - (G.unsqueeze(1) * selected_log_probs).mean()
+        l2_lambda = 0.001
+        l2_norm = sum(p.pow(2.0).sum() for p in self.policy.parameters())
 
-        loss = - (G.unsqueeze(1) * selected_log_probs).mean()
+        loss = torch.nn.functional.l1_loss(select_action.squeeze(), G.squeeze())
+        #loss = loss + l2_lambda * l2_norm
+
         loss.backward(retain_graph=True)
 
         self.optimizer.step()
@@ -185,8 +223,9 @@ class DOT:
                 action_probs = self.policy(S)
                 action_probs = action_probs.detach().cpu().numpy()[0]
                 A = self.policy.follow_policy(action_probs)
+                conf = action_probs[A]
 
-            S_prime, R, is_terminal = self.environment.take_action(A)
+            S_prime, R, is_terminal = self.environment.take_action(A, conf.item())
 
             # appending the state, the action and the reward to the batch.
             S_batch.append(S)
@@ -215,17 +254,20 @@ class DOT:
         # ------------------------------------------------------------------------------------------------------
 
         # Append the past action batch to the current batch if possible
-        if self.A_pa_batch is not None and len(self.A_pa_batch) > self.pa_batch_size:
-            batch = (torch.cat((self.S_pa_batch[0:self.pa_batch_size], S_batch), 0),
-                     torch.cat((self.A_pa_batch[0:self.pa_batch_size], A_batch), 0),
-                     torch.cat((self.G_pa_batch[0:self.pa_batch_size], G_batch), 0))
-        else:
-            batch = (S_batch, A_batch, G_batch)
+        #if self.A_pa_batch is not None and len(self.A_pa_batch) > self.pa_batch_size:
+        #    batch = (torch.cat((self.S_pa_batch[0:self.pa_batch_size], S_batch), 0),
+        #             torch.cat((self.A_pa_batch[0:self.pa_batch_size], A_batch), 0),
+        #             torch.cat((self.G_pa_batch[0:self.pa_batch_size], G_batch), 0))
+        #else:
+        #    batch = (S_batch, A_batch, G_batch)
 
         # Add some experiences to the buffer with respect of TD error
-        nb_new_memories = min(10, counter)
+        nb_new_memories = 50
 
-        idx = torch.randperm(len(A_batch))[:nb_new_memories]
+        #idx = torch.randperm(len(A_batch))[:nb_new_memories]
+        weights = G_batch + 1
+        weights /= torch.sum(weights)
+        idx = torch.multinomial(weights, nb_new_memories)
 
         if self.A_pa_batch is None:
             self.A_pa_batch = A_batch[idx]
@@ -239,10 +281,6 @@ class DOT:
         # clip the buffer if it's too big
         if len(self.A_pa_batch) > self.pa_dataset_size:
             # shuffling the batch
-            shuffle_index = torch.randperm(len(self.A_pa_batch))
-            self.A_pa_batch = self.A_pa_batch[shuffle_index]
-            self.G_pa_batch = self.G_pa_batch[shuffle_index]
-            self.S_pa_batch = self.S_pa_batch[shuffle_index]
 
             # dataset clipping
             surplus = len(self.A_pa_batch) - self.pa_dataset_size
@@ -253,7 +291,7 @@ class DOT:
         # ------------------------------------------------------------------------------------------------------
         # MODEL OPTIMISATION
         # ------------------------------------------------------------------------------------------------------
-        loss = self.update_policy(batch)
+        loss = self.update_policy()
 
         return loss, sum_reward
 
@@ -274,9 +312,11 @@ class DOT:
             with torch.no_grad():
                 action_probs = self.policy(S)
                 # no need to explore anymore.
+                action_probs = action_probs.detach().cpu().numpy()[0]
                 A = np.argmax(action_probs)
+                conf = action_probs[A]
 
-            S_prime, R, is_terminal = self.environment.take_action(A)
+            S_prime, R, is_terminal = self.environment.take_action(A, conf)
 
             S = S_prime
             sum_reward += R

@@ -47,9 +47,12 @@ class Trainer:
         self.img_list = None
         self.env = Environment(nb_classes)  # the environment on which the agent will be trained.
         self.agent = DOT(self.env, learning_rate, gamma, lr_gamma)  # the DOT agent (Detection Of Target)
-        self.agent_tod = TOD(self.env, learning_rate, gamma, lr_gamma)  # the TOD agent (Tiny Object Detection)
+        self.agent_tod = TOD(self.env, nb_class=nb_classes,
+                             learning_rate=learning_rate,
+                             gamma=0.5,
+                             lr_gamma=lr_gamma)  # the TOD agent (Tiny Object Detection)
 
-    def train(self, nb_episodes, train_path, plot_metric=False):
+    def train_dot(self, nb_episodes, train_path, plot_metric=False):
         """
         This method allow the user to train DOT/TOD on a specific object detection dataset.
         @param nb_episodes: number of episodes for the training.
@@ -74,6 +77,88 @@ class Trainer:
         # for plotting
         losses = []
         rewards = []
+        success = []
+        missed = []
+        missed_t = []
+        class_losses = []
+        class_losses_test = []
+        self.env.train_tod = False
+        # --------------------------------------------------------------------------------------------------------------
+        # LEARNING STEPS
+        # --------------------------------------------------------------------------------------------------------------
+        with tqdm(range(nb_episodes), unit="episode") as episode:
+            for i in episode:
+
+
+                # random image selection in the training set
+                while True:
+                    index = random.randint(0, len(self.img_list) - 1)
+                    img = os.path.join(self.img_path, self.img_list[index])
+                    bb = os.path.join(self.label_path, self.img_list[index][:-4] + '.txt')
+                    if os.path.exists(bb):
+                        break
+
+                # reload the environment on each image
+                first_state = self.env.reload_env(img, bb)
+                loss, reward = self.agent.fit_one_episode(first_state)
+                #loss_tod, iou_loss, class_loss = self.agent_tod.update_policy()
+                #losses_tod.append(loss_tod)
+                rewards.append(reward)
+                losses.append(loss)
+                success.append(self.env.successful_hit)
+                missed.append(self.env.missed_hit)
+                missed_t.append(self.env.missed_target)
+
+                #rewards.append(self.env.tod_rewards[-1])
+
+                episode.set_postfix(rewards=reward, loss=loss)
+
+        # --------------------------------------------------------------------------------------------------------------
+        # PLOT AND WEIGHTS SAVING
+        # --------------------------------------------------------------------------------------------------------------
+        # save weights on the current folder
+        today = date.today()
+        self.agent.save(str(today) + "-DOT-weights.pt")
+
+        if plot_metric:
+            plt.plot(rewards)
+            plt.show()
+            plt.plot(losses)
+            plt.show()
+            plt.plot(missed)
+            plt.show()
+            plt.plot(success)
+            plt.plot(missed_t)
+            plt.show()
+
+    def train_tod(self, nb_episodes, train_path, plot_metric=False):
+        """
+        This method allow the user to train DOT/TOD on a specific object detection dataset.
+        @param nb_episodes: number of episodes for the training.
+        @param train_path: path to the dataset.
+        @param plot_metric: if true plot the learning metrics.
+        """
+
+        # --------------------------------------------------------------------------------------------------------------
+        # LEARNING PREPARATION
+        # --------------------------------------------------------------------------------------------------------------
+
+        # plot the model architecture and total weights
+        self.agent.model_summary()
+        self.agent_tod.model_summary()
+
+        self.img_path = os.path.join(train_path, "img")
+        self.label_path = os.path.join(train_path, "bboxes")
+
+        self.img_list = sorted(os.listdir(self.img_path))
+        self.label_list = sorted(os.listdir(self.label_path))
+
+        # for plotting
+        losses = []
+        rewards = []
+        class_losses = []
+        class_losses_test = []
+        conf_loss = []
         self.env.train_tod = True
         # --------------------------------------------------------------------------------------------------------------
         # LEARNING STEPS
@@ -85,25 +170,33 @@ class Trainer:
                 while True:
                     index = random.randint(0, len(self.img_list) - 1)
                     img = os.path.join(self.img_path, self.img_list[index])
-                    bb = os.path.join(self.label_path, self.img_list[index].split('.')[0] + '.txt')
+                    bb = os.path.join(self.label_path, self.img_list[index][:-4] + '.txt')
                     if os.path.exists(bb):
                         break
 
                 # reload the environment on each image
                 first_state = self.env.reload_env(img, bb)
-                # fit DOT
-                loss, sum_reward = self.agent.fit_one_episode(first_state)
+                self.agent.exploit_one_episode(first_state)
+                loss_tod, iou_loss, _ = self.agent_tod.update_policy()
+                losses.append(loss_tod)
+                reward = np.mean(self.env.tod_rewards)
+                rewards.append(reward)
+                conf_loss.append(iou_loss)
 
-                rewards.append(sum_reward)
-                losses.append(loss)
-                episode.set_postfix(rewards=sum_reward, loss=loss)
+                episode.set_postfix(rewards=reward, loss=loss_tod)
+
+        self.agent_tod.prepare_ds()
+        with tqdm(range(200), unit="epoch") as epoch:
+            for i in epoch:
+                loss, loss_test = self.agent_tod.update_class_head()
+                class_losses.append(loss)
+                class_losses_test.append(loss_test)
 
         # --------------------------------------------------------------------------------------------------------------
         # PLOT AND WEIGHTS SAVING
         # --------------------------------------------------------------------------------------------------------------
         # save weights on the current folder
         today = date.today()
-        self.agent.save(str(today) + "-DOT-weights.pt")
         self.agent_tod.save(str(today) + "-TOD-weights.pt")
 
         if plot_metric:
@@ -111,13 +204,10 @@ class Trainer:
             plt.show()
             plt.plot(losses)
             plt.show()
-            plt.plot(self.env.tod_rewards)
+            plt.plot(class_losses)
+            plt.plot(class_losses_test)
             plt.show()
-            plt.plot(self.env.tod_policy_loss)
-            plt.show()
-            plt.plot(self.env.tod_class_loss)
-            plt.show()
-            plt.plot(self.env.tod_conf_loss)
+            plt.plot(conf_loss)
             plt.show()
 
     def evaluate(self, eval_path, plot_metric=False):
@@ -144,13 +234,13 @@ class Trainer:
             for i in episode:
                 img_filename = self.img_list[i]
                 img = os.path.join(self.img_path, img_filename)
-                bb = os.path.join(self.label_path, img_filename.split('.')[0] + '.txt')
+                bb = os.path.join(self.label_path, img_filename[:-4] + '.txt')
                 if not os.path.exists(bb):
                     continue
 
                 first_state = self.env.reload_env(img, bb)
+
                 sum_reward = self.agent.exploit_one_episode(first_state)
-                st = self.env.nb_actions_taken
                 rewards.append(sum_reward)
 
                 iou_error += self.env.get_iou_error()
@@ -159,7 +249,8 @@ class Trainer:
 
                 if plot_metric:
                     frames = self.env.steps_recorded
-                    frames.extend(self.env.TOD_history())
+                    cv2.imwrite(img_filename, cv2.cvtColor(self.env.DOT_history(), cv2.COLOR_RGB2BGR))
+                    cv2.imwrite(img_filename + ".tod.jpg", cv2.cvtColor(self.env.TOD_history(), cv2.COLOR_RGB2BGR))
                     create_video(frames, img_filename + ".avi")
 
         iou_error /= len(self.img_list)
