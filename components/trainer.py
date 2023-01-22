@@ -35,7 +35,8 @@ class Trainer:
     This class is used has a further abstraction between the agent and the environment. It makes each role more defined.
     """
 
-    def __init__(self, nb_classes, learning_rate=0.0005, gamma=0.1, lr_gamma=0.8):
+    def __init__(self, nb_classes, learning_rate=0.0005, gamma_tod=0.1,
+                 gamma_dot=0.1, e_tod=0.4, e_dot=0.3, lr_gamma=0.8):
         """
         @param learning_rate: learning rate given to the agents.
         @param gamma: the gamma factor of the discounted rewards
@@ -46,11 +47,12 @@ class Trainer:
         self.label_list = None
         self.img_list = None
         self.env = Environment(nb_classes)  # the environment on which the agent will be trained.
-        self.agent = DOT(self.env, learning_rate, gamma, lr_gamma)  # the DOT agent (Detection Of Target)
+        self.agent = DOT(self.env, learning_rate=learning_rate, gamma=gamma_dot,
+                         lr_gamma=lr_gamma, epsilon=e_dot)  # the DOT agent (Detection Of Target)
         self.agent_tod = TOD(self.env, nb_class=nb_classes,
                              learning_rate=learning_rate,
-                             gamma=0.5,
-                             lr_gamma=lr_gamma)  # the TOD agent (Tiny Object Detection)
+                             gamma=gamma_tod,
+                             lr_gamma=lr_gamma, epsilon=e_tod)  # the TOD agent (Tiny Object Detection)
 
     def train_dot(self, nb_episodes, train_path, plot_metric=False):
         """
@@ -66,7 +68,6 @@ class Trainer:
 
         # plot the model architecture and total weights
         self.agent.model_summary()
-        self.agent_tod.model_summary()
 
         self.img_path = os.path.join(train_path, "img")
         self.label_path = os.path.join(train_path, "bboxes")
@@ -80,15 +81,12 @@ class Trainer:
         success = []
         missed = []
         missed_t = []
-        class_losses = []
-        class_losses_test = []
         self.env.train_tod = False
         # --------------------------------------------------------------------------------------------------------------
         # LEARNING STEPS
         # --------------------------------------------------------------------------------------------------------------
         with tqdm(range(nb_episodes), unit="episode") as episode:
             for i in episode:
-
 
                 # random image selection in the training set
                 while True:
@@ -101,15 +99,12 @@ class Trainer:
                 # reload the environment on each image
                 first_state = self.env.reload_env(img, bb)
                 loss, reward = self.agent.fit_one_episode(first_state)
-                #loss_tod, iou_loss, class_loss = self.agent_tod.update_policy()
-                #losses_tod.append(loss_tod)
+
                 rewards.append(reward)
                 losses.append(loss)
                 success.append(self.env.successful_hit)
                 missed.append(self.env.missed_hit)
                 missed_t.append(self.env.missed_target)
-
-                #rewards.append(self.env.tod_rewards[-1])
 
                 episode.set_postfix(rewards=reward, loss=loss)
 
@@ -144,7 +139,6 @@ class Trainer:
         # --------------------------------------------------------------------------------------------------------------
 
         # plot the model architecture and total weights
-        self.agent.model_summary()
         self.agent_tod.model_summary()
 
         self.img_path = os.path.join(train_path, "img")
@@ -191,6 +185,8 @@ class Trainer:
                 loss, loss_test = self.agent_tod.update_class_head()
                 class_losses.append(loss)
                 class_losses_test.append(loss_test)
+
+                epoch.set_postfix(loss=loss, test_loss=loss_test)
 
         # --------------------------------------------------------------------------------------------------------------
         # PLOT AND WEIGHTS SAVING

@@ -18,7 +18,6 @@ class PolicyNet(nn.Module):
         self.e = epsilon
 
         # The feature extractor
-
         self.backbone = torch.nn.Sequential(
             torch.nn.Conv2d(3, 16, kernel_size=7, stride=3),
             torch.nn.ReLU(),
@@ -47,22 +46,12 @@ class PolicyNet(nn.Module):
             torch.nn.Linear(16, 8),
             torch.nn.ReLU(),
             torch.nn.Linear(8, actions)
-            #torch.nn.Softmax(dim=1)
         )
 
-        #self.backbone.to(self.device)
+        self.backbone.to(self.device)
         self.head.to(self.device)
 
         self.head.apply(self.init_weights)
-
-    def follow_polic2(self, probs):
-        """
-        this method allow the agent to choose an action randomly (for exploration) but with the respect of the
-        probability given by the policy net
-        @param probs: the probabilities returned by the model.
-        @return: an action include in the action space.
-        """
-        return np.random.choice(self.action_space, p=probs)
 
     def follow_policy(self, probs):
         """
@@ -93,7 +82,6 @@ class PolicyNet(nn.Module):
         @param state: the state given by the environment.
         @return: the transformed tensor
         """
-        #return state
         return state.permute(0, 3, 1, 2)
 
     def forward(self, state):

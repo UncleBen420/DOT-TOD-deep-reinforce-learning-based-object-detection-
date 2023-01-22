@@ -6,7 +6,7 @@ from torchvision import transforms
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, nb_actions=6, classes=5):
+    def __init__(self, nb_actions=6, classes=5, epsilon=0.4):
         super(PolicyNet, self).__init__()
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -14,6 +14,7 @@ class PolicyNet(nn.Module):
         self.action_space = np.arange(nb_actions)
         self.nb_actions = nb_actions
         self.classes = classes
+        self.epsilon = epsilon
 
         self.backbone = torch.nn.Sequential(
             torch.nn.Conv2d(3, 16, kernel_size=7, stride=3),
@@ -39,7 +40,6 @@ class PolicyNet(nn.Module):
             torch.nn.Linear(32, 16),
             torch.nn.ReLU(),
             torch.nn.Linear(16, self.nb_actions)
-            #torch.nn.Softmax(dim=1)
         )
 
         self.class_head = torch.nn.Sequential(
@@ -51,7 +51,6 @@ class PolicyNet(nn.Module):
             torch.nn.Linear(32, 16),
             torch.nn.ReLU(),
             torch.nn.Linear(16, classes)
-            # torch.nn.Softmax(dim=1)
         )
 
         self.conf_head = torch.nn.Sequential(
@@ -60,21 +59,18 @@ class PolicyNet(nn.Module):
             torch.nn.Linear(64, 16),
             torch.nn.ReLU(),
             torch.nn.Linear(16, 1)
-            # torch.nn.Softmax(dim=1)
         )
 
         self.backbone.to(self.device)
         self.policy_head.to(self.device)
+        self.class_head.to(self.device)
+        self.conf_head.to(self.device)
 
         self.policy_head.apply(self.init_weights)
 
-
-    def follow_policy2(self, probs):
-        return np.random.choice(self.action_space, p=probs)
-
     def follow_policy(self, probs):
         p = np.random.random()
-        if p < 0.4:
+        if p < self.epsilon:
             return np.random.choice(self.action_space)
         else:
             return np.argmax(probs)
@@ -90,7 +86,6 @@ class PolicyNet(nn.Module):
             m.bias.data.fill_(0.01)
 
     def prepare_data(self, state):
-       # return state
         return state.permute(0, 3, 1, 2)
 
     def forward(self, state):
@@ -98,11 +93,12 @@ class PolicyNet(nn.Module):
         preds = self.policy_head(x)
         class_preds = self.class_head(x)
         conf = self.conf_head(x)
-        return preds, conf, class_preds#, conf, class_preds
+        return preds, conf, class_preds
+
 
 class TOD:
 
-    def __init__(self, environment, learning_rate=0.0005, gamma=0.1,
+    def __init__(self, environment, learning_rate=0.0005, gamma=0.1, epsilon=0.4,
                  lr_gamma=0.9, pa_dataset_size=3000, pa_batch_size=50, nb_class=5):
 
         self.IOU_pa_batch = None
@@ -110,7 +106,7 @@ class TOD:
         self.environment = environment
         self.environment.tod = self
 
-        self.policy = PolicyNet(classes=nb_class)
+        self.policy = PolicyNet(classes=nb_class, epsilon=epsilon)
 
         self.pa_dataset_size = pa_dataset_size
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
