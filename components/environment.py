@@ -3,9 +3,7 @@ This file contain the implementation of the real environment.
 """
 import random
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
-from skimage.feature import hog
 
 TASK_MODEL_RES = 200
 ANCHOR_AGENT_RES = 64
@@ -18,6 +16,11 @@ class Environment:
     """
 
     def __init__(self, nb_class=4, train_tod=False, record=False):
+        self.best_bbox = None
+        self.tod_rewards = None
+        self.missed_target = None
+        self.missed_hit = None
+        self.successful_hit = None
         self.bboxes = None
         self.nb_actions_taken_tod = None
         self.current_bbox = None
@@ -79,10 +82,6 @@ class Environment:
         self.step = 0
         self.tod_rewards = []
 
-        #for bb in self.objects_coordinates:
-        #    x, y, w, h, _, _ = bb
-        #    cv2.rectangle(self.base_img, (int(x), int(y)), (int(x + w), int(y + h)), [255, 0, 0], 2)
-
         return self.get_state()
 
     def reload_env_tod(self, bb):
@@ -92,10 +91,6 @@ class Environment:
         @return: the first state for tod.
         """
         bb_x, bb_y = bb
-        bb_x -= 32
-        bb_x = bb_x if bb_x >= 0 else 0
-        bb_y -= 32
-        bb_y = bb_y if bb_y >= 0 else 0
         bb_w, bb_h = 64, 64
 
         if bb_x + bb_w >= 200:
@@ -124,10 +119,8 @@ class Environment:
         @param img: the image used to train.
         """
         self.full_img = cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB)
-
-        pad = int(ANCHOR_AGENT_RES / 2)
         self.base_img = self.full_img.copy()
-        #self.full_img = cv2.copyMakeBorder(self.full_img, pad, pad, pad, pad, cv2.BORDER_REFLECT)
+
 
     def get_current_coord(self):
         """
@@ -151,21 +144,6 @@ class Environment:
         temp = self.full_img[y: y + 64, x: x + 64]
         temp = cv2.resize(temp, (64, 64)) / 255.
 
-        #temp = hog(temp, orientations=8, pixels_per_cell=(16, 16), cells_per_block=(1, 1),  channel_axis=-1)
-        return temp
-
-    def get_state_visu(self):
-        """
-        give the current state for the agent.
-        @return: a 64x64 image.
-        """
-        x, y, pad = self.get_current_coord()
-
-        if y >= TASK_MODEL_RES:
-            return np.zeros((ANCHOR_AGENT_RES, ANCHOR_AGENT_RES, 3))
-
-        temp = self.full_img[y: y + 64, x: x + 64]
-
         return temp
 
     def get_tod_state(self):
@@ -186,7 +164,6 @@ class Environment:
         """
         bb_file = open(bb, 'r')
         lines = bb_file.readlines()
-        pad = ANCHOR_AGENT_RES / 2
         for line in lines:
             if line is not None:
                 values = line.split()
@@ -226,7 +203,7 @@ class Environment:
         # return the intersection over union value
         return iou
 
-    def non_max_suppression(self, boxes, conf_threshold=-10, iou_threshold=0.1):
+    def non_max_suppression(self, boxes, conf_threshold=0.1, iou_threshold=0.1):
         """
         eliminate the bounding box with a confidence below the threshold and bounding boxes that are specifying the
         same object.
@@ -281,11 +258,8 @@ class Environment:
             self.history.append((x, y, action, conf))
 
         is_in_bbox = 0  # label of the closest bounding box.
-
         for i, bbox in enumerate(self.objects_coordinates):
-
             bb_x, bb_y, bb_w, bb_h, label, centroid = bbox
-
             dist = self.distance_euclidian((x + 32, y + 32), centroid)
             if dist < 64.:
                 is_in_bbox += 1
@@ -327,10 +301,9 @@ class Environment:
         # --------------------------------------------------------------------------------------------------------------
         # Prepare the new state.
         self.nb_actions_taken += 1
-        is_terminal = False
-
         S_prime = self.get_state()
 
+        is_terminal = False
         if self.nb_actions_taken >= 100:
             is_terminal = True
 
@@ -338,7 +311,6 @@ class Environment:
             self.steps_recorded.append(self.DOT_history())
 
         return S_prime, reward, is_terminal
-
 
     def take_action_tod(self, A, conf, label_pred):
         """

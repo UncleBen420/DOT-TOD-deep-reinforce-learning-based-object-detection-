@@ -6,6 +6,9 @@ from torchvision import transforms
 
 
 class PolicyNet(nn.Module):
+    """
+    This class contain the implementation of the policy net for the tod agent.
+    """
     def __init__(self, nb_actions=6, classes=5, epsilon=0.4):
         super(PolicyNet, self).__init__()
 
@@ -69,6 +72,11 @@ class PolicyNet(nn.Module):
         self.policy_head.apply(self.init_weights)
 
     def follow_policy(self, probs):
+        """
+        this method allow the agent to choose an action randomly (for exploration) but with respect of the parameter e.
+        @param probs: the probabilities returned by the model.
+        @return: an action include in the action space.
+        """
         p = np.random.random()
         if p < self.epsilon:
             return np.random.choice(self.action_space)
@@ -76,19 +84,39 @@ class PolicyNet(nn.Module):
             return np.argmax(probs)
 
     def get_class(self, class_preds):
+        """
+        get the class prediction of the model.
+        @param class_preds: the prediction for each class.
+        @return: the maximum class prediction.
+        """
         proba = torch.nn.functional.softmax(class_preds, dim=1).squeeze()
         pred = torch.argmax(proba).item()
         return pred
 
     def init_weights(self, m):
+        """
+        This method allow to init the weight of the model.
+        @param m: the torch.nn.sequential class that need to be initialised.
+        """
         if isinstance(m, nn.Linear):
             torch.nn.init.xavier_uniform_(m.weight)
             m.bias.data.fill_(0.01)
 
     def prepare_data(self, state):
+        """
+        prepare the data in a format allowed by the model. Here it transform a tensor of cv2/numpy img into a PIL tensor
+        format tensor image.
+        @param state: the state given by the environment.
+        @return: the transformed tensor
+        """
         return state.permute(0, 3, 1, 2)
 
     def forward(self, state):
+        """
+        the surcharged forward method.
+        @param state: a tensor of state.
+        @return: the probabilities of taking an action for the state, the confidence of a bbox and the class prediction.
+        """
         x = self.backbone(state)
         preds = self.policy_head(x)
         class_preds = self.class_head(x)
@@ -97,6 +125,9 @@ class PolicyNet(nn.Module):
 
 
 class TOD:
+    """
+    The Tod class. (Tiny Object Detection). 
+    """
 
     def __init__(self, environment, learning_rate=0.0005, gamma=0.1, epsilon=0.4,
                  lr_gamma=0.9, pa_dataset_size=3000, pa_batch_size=50, nb_class=5):
@@ -168,8 +199,8 @@ class TOD:
         shuffle_index = torch.randperm(len(self.X))
         self.X = self.X[shuffle_index]
         self.Y = self.Y[shuffle_index]
-        X = self.X[:self.pa_batch_size]
-        Y = self.Y[:self.pa_batch_size]
+        X = self.X[:int(len(self.Y) / 2)]
+        Y = self.Y[:int(len(self.Y) / 2)]
 
         transform = transforms.RandomChoice(
             [transforms.RandomHorizontalFlip(),
@@ -200,6 +231,12 @@ class TOD:
 
         for i, param in enumerate(self.policy.class_head.parameters()):
             param.requires_grad = False
+        for i, param in enumerate(self.policy.backbone.parameters()):
+            param.requires_grad = True
+        for i, param in enumerate(self.policy.policy_head.parameters()):
+            param.requires_grad = True
+        for i, param in enumerate(self.policy.conf_head.parameters()):
+            param.requires_grad = True
 
         if self.A_pa_batch is None or len(self.A_pa_batch) < self.pa_batch_size:
             return 0., 0, 0

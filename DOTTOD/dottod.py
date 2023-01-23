@@ -6,9 +6,8 @@ import torch
 from torch import nn
 import os
 
-
+AGENT_RES = 64
 TASK_MODEL_RES = 200
-ANCHOR_AGENT_RES = 64
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -36,30 +35,32 @@ class PolicyNetDot(nn.Module):
             torch.nn.BatchNorm2d(16),
             torch.nn.Conv2d(16, 32, kernel_size=5, stride=2),
             torch.nn.ReLU(),
-            torch.nn.BatchNorm2d(32),
+            torch.nn.Dropout(0.2),
             torch.nn.Conv2d(32, 64, kernel_size=3, stride=2),
             torch.nn.ReLU(),
             torch.nn.BatchNorm2d(64),
             torch.nn.Conv2d(64, 128, kernel_size=3),
             torch.nn.ReLU(),
-            torch.nn.Flatten(),
+            torch.nn.Flatten()
         )
 
         # the mlp
         self.head = torch.nn.Sequential(
-            torch.nn.Linear(128, 32),
+            torch.nn.Linear(128, 64),
             torch.nn.ReLU(),
-            torch.nn.LayerNorm(32),
-            torch.nn.Linear(32, 8),
+            torch.nn.LayerNorm(64),
+            torch.nn.Linear(64, 32),
             torch.nn.ReLU(),
-            torch.nn.Linear(8, actions),
-            torch.nn.Softmax(dim=1)
+            torch.nn.Linear(32, 16),
+            torch.nn.ReLU(),
+            torch.nn.LayerNorm(16),
+            torch.nn.Linear(16, 8),
+            torch.nn.ReLU(),
+            torch.nn.Linear(8, actions)
         )
 
         self.backbone.to(self.device)
         self.head.to(self.device)
-
-        self.head.apply(self.init_weights)
 
     def prepare_data(self, state):
         """
@@ -86,7 +87,6 @@ class DOT:
     """
 
     def __init__(self, environment):
-
         self.environment = environment
         self.environment.agent = self
         self.policy = PolicyNetDot()
@@ -106,7 +106,6 @@ class DOT:
         """
         while True:
             # State preprocess
-
             S = torch.from_numpy(S).float()
             S = S.unsqueeze(0).to(self.policy.device)
             S = self.policy.prepare_data(S)
@@ -129,7 +128,7 @@ class DOT:
 
 
 class PolicyNetTod(nn.Module):
-    def __init__(self, nb_actions=8, classes=5):
+    def __init__(self, nb_actions=6, classes=5):
         super(PolicyNetTod, self).__init__()
 
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -144,7 +143,7 @@ class PolicyNetTod(nn.Module):
             torch.nn.BatchNorm2d(16),
             torch.nn.Conv2d(16, 32, kernel_size=5, stride=2),
             torch.nn.ReLU(),
-            torch.nn.BatchNorm2d(32),
+            torch.nn.Dropout(0.2),
             torch.nn.Conv2d(32, 64, kernel_size=3, stride=2),
             torch.nn.ReLU(),
             torch.nn.BatchNorm2d(64),
@@ -154,31 +153,33 @@ class PolicyNetTod(nn.Module):
         )
 
         self.policy_head = torch.nn.Sequential(
-            torch.nn.Linear(128, 32),
+            torch.nn.Linear(128, 64),
+            torch.nn.ReLU(),
+            torch.nn.Linear(64, 32),
             torch.nn.ReLU(),
             torch.nn.LayerNorm(32),
             torch.nn.Linear(32, 16),
             torch.nn.ReLU(),
-            torch.nn.Linear(16, self.nb_actions),
-            torch.nn.Softmax(dim=1)
-        )
-
-        self.conf_head = torch.nn.Sequential(
-            torch.nn.Linear(128, 32),
-            torch.nn.ReLU(),
-            torch.nn.LayerNorm(32),
-            torch.nn.Linear(32, 16),
-            torch.nn.ReLU(),
-            torch.nn.Linear(16, 1)
+            torch.nn.Linear(16, self.nb_actions)
         )
 
         self.class_head = torch.nn.Sequential(
-            torch.nn.Linear(128, 32),
+            torch.nn.Linear(128, 64),
+            torch.nn.ReLU(),
+            torch.nn.Linear(64, 32),
             torch.nn.ReLU(),
             torch.nn.LayerNorm(32),
             torch.nn.Linear(32, 16),
             torch.nn.ReLU(),
             torch.nn.Linear(16, classes)
+        )
+
+        self.conf_head = torch.nn.Sequential(
+            torch.nn.Linear(128, 64),
+            torch.nn.ReLU(),
+            torch.nn.Linear(64, 16),
+            torch.nn.ReLU(),
+            torch.nn.Linear(16, 1)
         )
 
         self.backbone.to(self.device)
@@ -204,11 +205,9 @@ class PolicyNetTod(nn.Module):
 
 class TOD:
 
-    def __init__(self, environment):
-
+    def __init__(self, environment, classes):
         self.environment = environment
-
-        self.policy = PolicyNetTod()
+        self.policy = PolicyNetTod(classes=classes)
 
     def load(self, weights):
         self.policy.load_state_dict(torch.load(weights))
@@ -225,7 +224,7 @@ class TOD:
                 conf = conf.item()
 
                 action_probs = action_probs.detach().cpu().numpy()[0]
-                A = self.policy.follow_policy(action_probs)
+                A = np.argmax(action_probs)
 
                 label = self.policy.get_class(class_preds)
 
@@ -247,7 +246,7 @@ class Environment:
     He must not mark place where there is house.
     """
 
-    def __init__(self, nb_class=4):
+    def __init__(self, nb_class=4, conf_threshold=0.2):
         self.bboxes = None
         self.nb_actions_taken_tod = None
         self.current_bbox = None
@@ -256,6 +255,15 @@ class Environment:
         self.nb_actions_taken = 0
         self.tod = None
         self.nb_classes = nb_class
+        self.best_bbox = None
+        self.conf_threshold = conf_threshold
+
+        self.colors = []
+        for i in range(self.nb_classes + 1):
+            r = random.randint(0, 255)
+            g = random.randint(0, 255)
+            b = random.randint(0, 255)
+            self.colors.append([r, g, b])
 
     def reload_env(self, img):
         """
@@ -279,17 +287,13 @@ class Environment:
         @return: the first state for tod.
         """
         bb_x, bb_y = bb
-        bb_x -= 48
-        bb_x = bb_x if bb_x >= 0 else 0
-        bb_y -= 48
-        bb_y = bb_y if bb_y >= 0 else 0
-        bb_w, bb_h = 32, 32
+        bb_w, bb_h = 64, 64
 
         if bb_x + bb_w >= 200:
-            bb_x = 168
+            bb_x = 136
 
         if bb_y + bb_h >= 200:
-            bb_y = 168
+            bb_y = 136
 
         self.current_bbox = {
             'x': bb_x,
@@ -300,6 +304,7 @@ class Environment:
             'label': 0.
         }
 
+        self.best_bbox = self.current_bbox.copy()
         self.nb_actions_taken_tod = 0
 
         return self.get_tod_state()
@@ -309,11 +314,12 @@ class Environment:
         prepare the image for the environment.
         @param img: the image used to train.
         """
-        self.full_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        self.full_img = cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB)
+        if self.full_img is None or 4 > len(self.full_img.shape) != 3:
+            raise ValueError("Image provided must be a single BGR cv2 image")
 
-        pad = int(ANCHOR_AGENT_RES / 2)
         self.base_img = self.full_img.copy()
-        self.full_img = cv2.copyMakeBorder(self.full_img, pad, pad, pad, pad, cv2.BORDER_REFLECT)
+
 
     def get_current_coord(self):
         """
@@ -322,7 +328,7 @@ class Environment:
         """
         x = int(self.nb_actions_taken % 10)
         y = int(self.nb_actions_taken / 10)
-        pad = int(200 / 10)
+        pad = int((200 - AGENT_RES) / 10)
 
         return x * pad, y * pad
 
@@ -331,12 +337,12 @@ class Environment:
         give the current state for the agent.
         @return: a 64x64 image.
         """
+
         x, y = self.get_current_coord()
 
-        temp = self.full_img[y: y + ANCHOR_AGENT_RES,
-               x: x + ANCHOR_AGENT_RES]
+        temp = self.full_img[y: y + AGENT_RES, x: x + AGENT_RES]
+        temp = cv2.resize(temp, (AGENT_RES, AGENT_RES)) / 255.
 
-        temp = cv2.resize(temp, (ANCHOR_AGENT_RES, ANCHOR_AGENT_RES)) / 255.
         return temp
 
     def get_tod_state(self):
@@ -346,7 +352,7 @@ class Environment:
         """
         temp = self.base_img[self.current_bbox['y']: self.current_bbox['y'] + self.current_bbox['h'],
                self.current_bbox['x']: self.current_bbox['x'] + self.current_bbox['w']]
-        temp = cv2.resize(temp, (ANCHOR_AGENT_RES, ANCHOR_AGENT_RES)) / 255.
+        temp = cv2.resize(temp, (AGENT_RES, AGENT_RES)) / 255.
         return temp
 
     # https://gist.github.com/meyerjo/dd3533edc97c81258898f60d8978eddc
@@ -378,7 +384,7 @@ class Environment:
         # return the intersection over union value
         return iou
 
-    def non_max_suppression(self, boxes, conf_threshold=0., iou_threshold=0.1):
+    def non_max_suppression(self, boxes, iou_threshold=0.1):
         """
         eliminate the bounding box with a confidence below the threshold and bounding boxes that are specifying the
         same object.
@@ -392,7 +398,7 @@ class Environment:
 
         boxes_sorted = sorted(boxes, reverse=True, key=lambda x: x[4])
         for box in boxes_sorted:
-            if box[4] >= conf_threshold:
+            if box[4] >= self.conf_threshold:
                 bbox_list_thresholded.append(box)
             else:
                 break
@@ -421,36 +427,22 @@ class Environment:
             # --------------------------------------------------------------------------------------------------------------
             # Get the current coordinate of the agent.
             x, y = self.get_current_coord()
-            # need to be padded to point the coordinate to the middle of the agent vision.
-            x += 32
-            y += 32
 
             # reload the environment for tod.
             first_state_tod = self.reload_env_tod((x, y))
-
             self.tod(first_state_tod)
-
-            # remove the bbox found by tod from the image.
-            cv2.rectangle(self.full_img, (self.current_bbox['x'] + 32, self.current_bbox['y'] + 32),
-                          (self.current_bbox['x'] + 32 + self.current_bbox['w'],
-                           self.current_bbox['y'] + 32 + self.current_bbox['h']), [0, 0, 0], -1)
-
             # append the bbox to the bboxes found by tod.
-            self.bboxes.append((self.current_bbox['x'], self.current_bbox['y'],
-                                self.current_bbox['w'], self.current_bbox['h'],
-                                self.current_bbox['conf'], self.current_bbox['label']))
+            self.bboxes.append((self.best_bbox['x'], self.best_bbox['y'],
+                                self.best_bbox['w'], self.best_bbox['h'],
+                                self.best_bbox['conf'], self.best_bbox['label']))
 
         # --------------------------------------------------------------------------------------------------------------
         # Prepare the new state.
         self.nb_actions_taken += 1
-        is_terminal = False
-
         # Get the new coordinate to give the new state.
-        x, y = self.get_current_coord()
-        x += 32
-        y += 32
         S_prime = self.get_state()
 
+        is_terminal = False
         if self.nb_actions_taken >= 100:
             is_terminal = True
 
@@ -464,41 +456,44 @@ class Environment:
         @param label_pred: the label that tod has predicted.
         @return: the next state, the current reward, if the state is terminal, the iou and the label of the state.
         """
-        is_terminal = False
+
+        if conf > self.best_bbox['conf']:
+            self.best_bbox = self.current_bbox.copy()
 
         self.nb_actions_taken_tod += 1
-        pad = 3
+        ratio = 0.1
+        pad = int(ratio * np.mean([self.current_bbox['w'], self.current_bbox['h']]))
+        pad_dep = pad
 
         if A == 0:
-            if self.current_bbox['x'] + self.current_bbox['w'] < 200 - pad:
-                self.current_bbox['w'] += pad
+            if self.current_bbox['x'] + self.current_bbox['w'] < 200 - pad_dep:
+                self.current_bbox['x'] += pad_dep
         elif A == 1:
-            if self.current_bbox['y'] + self.current_bbox['h'] < 200 - pad:
-                self.current_bbox['h'] += pad
-        elif A == 2:
-            if self.current_bbox['w'] >= 32:
-                self.current_bbox['w'] -= pad
-        elif A == 3:
-            if self.current_bbox['h'] >= 32:
-                self.current_bbox['h'] -= pad
-        elif A == 4:
-            if self.current_bbox['x'] >= pad:
-                self.current_bbox['x'] -= pad
-                self.current_bbox['w'] += pad
-        elif A == 5:
-            if self.current_bbox['x'] + self.current_bbox['w'] < 200 - pad:
-                self.current_bbox['x'] += pad
-                self.current_bbox['w'] -= pad
-        elif A == 6:
-            if self.current_bbox['y'] >= pad:
-                self.current_bbox['y'] -= pad
-                self.current_bbox['h'] += pad
-        elif A == 7:
-            if self.current_bbox['y'] + self.current_bbox['h'] < 200 - pad:
-                self.current_bbox['y'] += pad
-                self.current_bbox['h'] -= pad
 
-        if self.nb_actions_taken_tod >= 25:
+            if self.current_bbox['y'] + self.current_bbox['h'] < 200 - pad_dep:
+                self.current_bbox['y'] += pad_dep
+        elif A == 2:
+            if self.current_bbox['x'] >= pad_dep:
+                self.current_bbox['x'] -= pad_dep
+        elif A == 3:
+            if self.current_bbox['y'] >= pad_dep:
+                self.current_bbox['y'] -= pad_dep
+        elif A == 4:
+            if self.current_bbox['w'] - 2 * pad >= 32 and self.current_bbox['h'] - 2 * pad >= 32:
+                self.current_bbox['w'] -= 2 * pad
+                self.current_bbox['x'] += pad
+                self.current_bbox['h'] -= 2 * pad
+                self.current_bbox['y'] += pad
+        elif A == 5:
+            if self.current_bbox['x'] + self.current_bbox['w'] < 200 - pad and self.current_bbox['x'] >= pad and \
+                    self.current_bbox['y'] + self.current_bbox['h'] < 200 - pad and self.current_bbox['y'] >= pad:
+                self.current_bbox['w'] += 2 * pad
+                self.current_bbox['x'] -= pad
+                self.current_bbox['h'] += 2 * pad
+                self.current_bbox['y'] -= pad
+
+        is_terminal = False
+        if self.nb_actions_taken_tod >= 50:
             is_terminal = True
 
         self.current_bbox['conf'] = conf
@@ -507,6 +502,29 @@ class Environment:
         next_state = self.get_tod_state()
 
         return next_state, is_terminal
+
+    def TOD_history(self):
+
+        bboxes = self.non_max_suppression(self.bboxes)
+        history_img = self.base_img.copy()
+
+        for bb in bboxes:
+            x, y, w, h, conf, label = bb
+
+            if label == self.nb_classes:
+                continue
+
+            p1 = (int(x), int(y))
+            p2 = (int(x + w), int(y + h))
+            history_img = cv2.rectangle(history_img, p1, p2, self.colors[label], 2)
+            history_img = cv2.putText(history_img,
+                                      str(label) + ' ' + str(round(conf, 2)),
+                                      (int(x + 5), int(y + 10)),
+                                      cv2.FONT_HERSHEY_SIMPLEX,
+                                      0.3,
+                                      self.colors[label], 1, cv2.LINE_AA)
+
+        return history_img
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -519,23 +537,22 @@ class DotTod:
     He must not mark place where there is house.
     """
 
-    def __init__(self, nb_class=4, tod_weights="tod_weights.pt", dot_weights="dot_weights.pt"):
-        self.env = Environment(nb_class=nb_class)
+    def __init__(self, nb_class=4, tod_weights="tod-weights.pt", dot_weights="dot-weights.pt",
+                 iou_threshold=0.2, return_img=False):
+        self.env = Environment(nb_class=nb_class, conf_threshold=iou_threshold)
 
         filepath = os.path.join(os.path.dirname(__file__), "weights")
         dot_path = os.path.join(filepath, dot_weights)
         tod_path = os.path.join(filepath, tod_weights)
 
-        self.tod = TOD(self.env, nb_class=nb_class + 1)
+        self.tod = TOD(self.env, classes=nb_class)
         self.tod.load(tod_path)
         self.env.tod = self.tod
-        self.dot = DOT(self.dot)
+        self.dot = DOT(self.env)
         self.dot.load(dot_path)
+        self.return_img = return_img
 
     def __call__(self, image):
-
-        if 4 > len(image.shape) != 3:
-            raise ValueError("Image provided must be a single BGR cv2 image")
 
         S = self.env.reload_env(image)
         self.dot(S)
@@ -553,6 +570,9 @@ class DotTod:
 
             bounding_boxes.append(bounding_box)
 
+        if self.return_img:
+            return bounding_box, self.env.TOD_history()
+
         return bounding_boxes
 
 
@@ -563,16 +583,21 @@ if __name__ == '__main__':
     parser.add_argument('-img', '--images_path',
                         help='the path to the data.')
     parser.add_argument('-nb', '--nb_class', help='number of class')
+    parser.add_argument('-plt', '--return_image', action='store_true')
+    parser.add_argument('-conf', '--conf_threshold', default=0.2)
 
     args = parser.parse_args()
 
-    dottod = DotTod(int(args.nb_class))
+    dottod = DotTod(nb_class=int(args.nb_class), iou_threshold=float(args.conf_threshold), return_img=args.return_image)
 
     images_list = os.listdir(args.images_path)
     results = []
     for filename in images_list:
-        img = cv2.imread(os.path.join(args.images_path, filename))
-        bboxes = dottod(img)
+        if args.return_image:
+            bboxes, img = dottod(os.path.join(args.images_path, filename))
+            cv2.imwrite(filename, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        else:
+            bboxes = dottod(os.path.join(args.images_path, filename))
         result = {
             "filename": filename,
             "bboxes": bboxes
