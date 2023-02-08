@@ -126,7 +126,7 @@ class PolicyNet(nn.Module):
 
 class TOD:
     """
-    The Tod class. (Tiny Object Detection). 
+    The Tod class. (Tiny Object Detection).
     """
 
     def __init__(self, environment, learning_rate=0.0005, gamma=0.1, epsilon=0.4,
