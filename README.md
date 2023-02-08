@@ -4,27 +4,29 @@ DOT TOD is a deep reinforcement learning based objects detection. It is using tw
 DOT go trough the entire image by sliding window, deciding if a window is a region of interest or not.
 TOD is charged to adjust the window has a bounding box that fit the best the object inside.
 
+<p float="left">
 <img src="git_images/pomeranian_183_jpg.rf.4a335c2cd43055913eab2e457baf4c96.jpg" height="200" width="200" >
-
 <img src="git_images/pomeranian_183_jpg.rf.4a335c2cd43055913eab2e457baf4c96.jpg.tod.jpg" height="200" width="200" >
-
 <img src="git_images/pomeranian_183_jpg.rf.4a335c2cd43055913eab2e457baf4c96.jpg.gif" height="200" width="200" >
-
+</p>
 
 The above left image show the state of the image after DOT has process it. The middle image, is the work of TOD with also bounding boxes cleaning and the last .gif show the whole process.
 
 This exemple is from the dataset Oxford pet: https://public.roboflow.com/object-detection/oxford-pets
 
+<p float="left">
 <img src="git_images/006818_jpg.rf.4128b8b89e3a9514629c63c3542f1794.jpg" height="200" width="200" >
 <img src="git_images/006818_jpg.rf.4128b8b89e3a9514629c63c3542f1794.jpg.tod.jpg" height="200" width="200" >
 <img src="git_images/006818_jpg.rf.4128b8b89e3a9514629c63c3542f1794.jpg.gif" height="200" width="200" >
+</p>
 
 Another example from the dataset Hard hat worker: https://public.roboflow.com/object-detection/hard-hat-workers
 
-
+<p float="left">
 <img src="git_images/42_8.jpg" height="200" width="200" >
 <img src="git_images/42_8.jpg.tod.jpg" height="200" width="200" >
 <img src="git_images/42_8.jpg.gif" height="200" width="200" >
+</p>
 
 A last example from the dataset NOAA: https://www.kaggle.com/competitions/noaa-fisheries-steller-sea-lion-population-count/overview
 
