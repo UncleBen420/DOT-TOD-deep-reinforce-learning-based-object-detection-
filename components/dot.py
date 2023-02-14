@@ -154,25 +154,15 @@ class DOT:
         A = self.A_pa_batch[:self.pa_batch_size]
         G = self.G_pa_batch[:self.pa_batch_size]
 
-        #S, A, G = batch
-
         # Calculate loss
         self.optimizer.zero_grad()
         action_probs = self.policy(S)
 
-        log_probs = torch.log(action_probs)
-        log_probs = torch.nan_to_num(log_probs)
-
-        #selected_log_probs = torch.gather(log_probs, 1, A.unsqueeze(1))
         select_action = torch.gather(action_probs, 1, A.unsqueeze(1))
-        #loss = - (G.unsqueeze(1) * selected_log_probs).mean()
-        l2_lambda = 0.001
-        l2_norm = sum(p.pow(2.0).sum() for p in self.policy.parameters())
 
-        loss = torch.nn.functional.l1_loss(select_action.squeeze(), G.squeeze())
-        #loss = loss + l2_lambda * l2_norm
+        loss = torch.nn.functional.mse_loss(select_action.squeeze(), G.squeeze())
 
-        loss.backward(retain_graph=True)
+        loss.backward()
 
         self.optimizer.step()
         self.scheduler.step()
@@ -241,18 +231,9 @@ class DOT:
         # PAST ACTION DATASET PREPARATION
         # ------------------------------------------------------------------------------------------------------
 
-        # Append the past action batch to the current batch if possible
-        #if self.A_pa_batch is not None and len(self.A_pa_batch) > self.pa_batch_size:
-        #    batch = (torch.cat((self.S_pa_batch[0:self.pa_batch_size], S_batch), 0),
-        #             torch.cat((self.A_pa_batch[0:self.pa_batch_size], A_batch), 0),
-        #             torch.cat((self.G_pa_batch[0:self.pa_batch_size], G_batch), 0))
-        #else:
-        #    batch = (S_batch, A_batch, G_batch)
-
         # Add some experiences to the buffer with respect of TD error
         nb_new_memories = 50
 
-        #idx = torch.randperm(len(A_batch))[:nb_new_memories]
         weights = G_batch + 1
         weights /= torch.sum(weights)
         idx = torch.multinomial(weights, nb_new_memories)
@@ -268,9 +249,6 @@ class DOT:
 
         # clip the buffer if it's too big
         if len(self.A_pa_batch) > self.pa_dataset_size:
-            # shuffling the batch
-
-            # dataset clipping
             surplus = len(self.A_pa_batch) - self.pa_dataset_size
             _, self.A_pa_batch = torch.split(self.A_pa_batch, [surplus, self.pa_dataset_size])
             _, self.G_pa_batch = torch.split(self.G_pa_batch, [surplus, self.pa_dataset_size])

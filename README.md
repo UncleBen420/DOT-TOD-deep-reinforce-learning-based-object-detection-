@@ -33,7 +33,7 @@ A last example from the dataset NOAA: https://www.kaggle.com/competitions/noaa-f
 **Caution:** DOT TOD is, in is current state, not ready to be used. It is more a proof of concept to attempt to reduce the size of object detection models using Deep RL.
 If you want to use it anyway, you can follow the installation and usage instructions.
 
-## installation instructions
+# Installation instructions
 
 clone this repository:
 
@@ -49,7 +49,7 @@ pip install -r requirements.txt
 
 Your are now able to use DOT TOD.
 
-# usage instructions
+# Usage instructions
 
 ## Training
 
